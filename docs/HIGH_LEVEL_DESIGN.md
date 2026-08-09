@@ -1,0 +1,71 @@
+# SnapTix High-Level System Design (HLD)
+
+## 1. System Architecture Diagram
+
+SnapTix follows an **Event-Driven Microservices Architecture** built with **Java 17 & Spring Boot 3**, backed by **PostgreSQL**, **Redis**, and a **React + Tailwind** front-end client.
+
+```
+                     +---------------------------------------+
+                     |    Client Tier (React 18 / PWA)      |
+                     +---------------------------------------+
+                                         |
+                                         | HTTPS / WebSocket
+                                         v
+                     +---------------------------------------+
+                     |   API Gateway / Reverse Proxy         |
+                     |   (Spring Cloud Gateway / Nginx)      |
+                     +---------------------------------------+
+                                         |
+            +----------------------------+----------------------------+
+            |                            |                            |
+            v                            v                            v
+  +-------------------+        +-------------------+        +-------------------+
+  | Auth & User       |        | Event & Discovery |        | Ticketing & Order |
+  | Service           |        | Service           |        | Service           |
+  | (Spring Boot 3)   |        | (Spring Boot 3)   |        | (Spring Boot 3)   |
+  +-------------------+        +-------------------+        +-------------------+
+            |                            |                            |
+            +----------------------------+----------------------------+
+                                         |
+                                         v
+                     +---------------------------------------+
+                     |    Dynamic Pass Generator &           |
+                     |    HMAC Token Engine                  |
+                     +---------------------------------------+
+                                         |
+       +---------------------------------+---------------------------------+
+       |                                 |                                 |
+       v                                 v                                 v
++--------------+                 +---------------+                 +---------------+
+| PostgreSQL   |                 | Redis Cache   |                 | Message Queue |
+| Primary DB   |                 | (Token/Pass)  |                 | (RabbitMQ)    |
++--------------+                 +---------------+                 +---------------+
+```
+
+---
+
+## 2. Component Descriptions
+
+### 2.1 API Gateway Tier
+- Serves as the single entry point for all client web & mobile applications.
+- Performs Rate Limiting (Token Bucket algorithm via Redis), CORS handling, SSL termination, and JWT validation.
+
+### 2.2 Auth & User Microservice
+- Handles User Registration, Authentication (JWT with RSA-256 signing), and Role-Based Access Control (RBAC: `ATTENDEE`, `MODERATOR`, `ORGANISER_ADMIN`).
+
+### 2.3 Event & Discovery Microservice
+- Manages Event creation, Draft moderation workflow (`pending_approval` -> `published`), Location distance filtering, Category indexing, and AI marketing copy generation.
+
+### 2.4 Ticketing & Order Engine (Core Transactional Service)
+- Manages high-concurrency ticket reservations using Redis Distributed Locks (`Redisson`) to prevent double-selling during flash ticket sales.
+- Processes payment webhooks and generates immutable Ticket Pass records.
+
+### 2.5 Dynamic Pass Engine (Anti-Scalping Token Service)
+- Generates time-variant HMAC-SHA256 OTP tokens that update every 15 seconds.
+- Validates gate check-ins with sub-0.2s latency.
+
+---
+
+## 3. High Availability & Data Persistence Strategy
+- **Relational Persistence:** PostgreSQL with Read Replicas for transactional safety, ACID compliance, and relational integrity across Events, Orders, and Passes.
+- **In-Memory Cache:** Redis for active session caching, ticket inventory countdowns, and short-lived OTP validation keys.

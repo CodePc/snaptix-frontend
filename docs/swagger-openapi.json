@@ -1,0 +1,236 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SnapTix Backend REST API Specification",
+    "description": "Production-grade RESTful API for SnapTix Anti-Scalping Ticketing System, Dynamic HMAC Passes, and Event Marketplace.",
+    "version": "2.0.0",
+    "contact": {
+      "name": "SnapTix Engineering Team",
+      "email": "dev@snaptix.io"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080/api/v1",
+      "description": "Local Development Server"
+    },
+    {
+      "url": "https://api.snaptix.io/v1",
+      "description": "Production Cloud Server"
+    }
+  ],
+  "tags": [
+    { "name": "Authentication", "description": "JWT Sign-in & Registration" },
+    { "name": "Events", "description": "Event Discovery, Management & Approval Lifecycle" },
+    { "name": "Orders", "description": "Ticket Purchases & Reservations" },
+    { "name": "Dynamic Passes", "description": "Anti-Scalping Rotating HMAC QR Tokens & Gate Check-in" },
+    { "name": "Resale Market", "description": "Face-Value Secondary Resale Marketplace" }
+  ],
+  "paths": {
+    "/auth/register": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Register new user account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password", "fullName"],
+                "properties": {
+                  "email": { "type": "string", "example": "fan@example.com" },
+                  "password": { "type": "string", "example": "SecretPass123!" },
+                  "fullName": { "type": "string", "example": "John Doe" },
+                  "role": { "type": "string", "enum": ["ATTENDEE", "ORGANISER"], "default": "ATTENDEE" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "User registered successfully" },
+          "400": { "description": "Email already exists" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Authenticate user & issue JWT Bearer token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "example": "fan@example.com" },
+                  "password": { "type": "string", "example": "SecretPass123!" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string", "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+                    "expiresIn": { "type": "integer", "example": 86400 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "tags": ["Events"],
+        "summary": "List all live published events",
+        "parameters": [
+          { "name": "category", "in": "query", "schema": { "type": "string" } },
+          { "name": "city", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "default": "published" } }
+        ],
+        "responses": {
+          "200": { "description": "List of events returned successfully" }
+        }
+      },
+      "post": {
+        "tags": ["Events"],
+        "summary": "Create new event (Draft or Pending Approval)",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "category", "city", "venue", "eventDate"],
+                "properties": {
+                  "title": { "type": "string", "example": "Neon Horizons Underground" },
+                  "description": { "type": "string" },
+                  "category": { "type": "string", "example": "Music" },
+                  "city": { "type": "string", "example": "New York, NY" },
+                  "venue": { "type": "string", "example": "Brooklyn Warehouse 4B" },
+                  "eventDate": { "type": "string", "format": "date-time" },
+                  "tiers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": { "type": "string", "example": "General Admission" },
+                        "price": { "type": "number", "example": 45.00 },
+                        "capacity": { "type": "integer", "example": 250 }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Event created" }
+        }
+      }
+    },
+    "/events/{id}/status": {
+      "put": {
+        "tags": ["Events"],
+        "summary": "Update event status (Moderator submit / Admin approve & publish)",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["draft", "pending_approval", "published", "rejected", "completed"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Event status updated" }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "tags": ["Orders"],
+        "summary": "Purchase tickets (Creates Order & TicketPasses)",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["tierId", "quantity"],
+                "properties": {
+                  "tierId": { "type": "string", "format": "uuid" },
+                  "quantity": { "type": "integer", "example": 2 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Order created & passes issued" }
+        }
+      }
+    },
+    "/passes/{id}/validate": {
+      "post": {
+        "tags": ["Dynamic Passes"],
+        "summary": "Validate gate check-in using 15-second rotating HMAC token",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["token"],
+                "properties": {
+                  "token": { "type": "string", "example": "849201" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Check-in successful" },
+          "400": { "description": "Invalid or expired token" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}
