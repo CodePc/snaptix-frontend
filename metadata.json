@@ -1,0 +1,10 @@
+{
+  "name": "Snaptix - Live Event Ticketing & Organiser Studio",
+  "description": "Modern live event ecosystem featuring rotating anti-screenshot QR passes, fair fan resale, AI event generation, free & paid tiers, moderator approval queue, and organiser settings.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

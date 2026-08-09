@@ -1,5 +1,10 @@
 # SnapTix Data Sequence & Flow Diagrams
 
+> **Shared document.** An identical copy lives in both `snaptix-backend/docs/` and
+> `snaptix-frontend/docs/`. Edit one and copy it across — otherwise the two drift and
+> neither is trustworthy. Last synced: 2026-08-09.
+
+
 ## 1. Ticket Purchase Flow (Anti-Scalping Escrow Order)
 
 ```mermaid

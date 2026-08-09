@@ -1,5 +1,10 @@
 # SnapTix Product Definition & Requirements (PDR)
 
+> **Shared document.** An identical copy lives in both `snaptix-backend/docs/` and
+> `snaptix-frontend/docs/`. Edit one and copy it across — otherwise the two drift and
+> neither is trustworthy. Last synced: 2026-08-09.
+
+
 **Product Name:** SnapTix - Next-Generation Event Ticketing & Anti-Scalping Pass System  
 **Version:** 2.0.0  
 **Target Platform:** Web (Desktop/Mobile Web PWA), Backend REST API  
