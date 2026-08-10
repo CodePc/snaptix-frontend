@@ -6,7 +6,6 @@ import {
   Check,
   Plus,
   Minus,
-  Tag,
   ShieldCheck,
   Loader2,
   Lock,
@@ -39,9 +38,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     }
   );
   const [quantity, setQuantity] = useState<number>(1);
-  const [promoCode, setPromoCode] = useState<string>('');
-  const [discount, setDiscount] = useState<number>(0);
-  const [promoMessage, setPromoMessage] = useState<string>('');
   const [selectedPayment, setSelectedPayment] = useState<string>('card');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [walletStatus, setWalletStatus] = useState<string | null>(null);
@@ -49,24 +45,9 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
   if (!isOpen) return null;
 
-  const subtotal = selectedTier.price * quantity;
-  const serviceFee = selectedTier.price > 0 ? 3.5 * quantity : 0;
-  const total = Math.max(0, subtotal + serviceFee - discount);
-
-  const handleApplyPromo = () => {
-    const code = promoCode.trim().toUpperCase();
-    if (code === 'SNAP10' || code === 'SNAPTIX') {
-      setDiscount(10);
-      setPromoMessage('Promo code applied: $10.00 OFF!');
-    } else if (code === 'SAVE20') {
-      const disc = subtotal * 0.2;
-      setDiscount(disc);
-      setPromoMessage('Promo code applied: 20% OFF!');
-    } else if (code) {
-      setPromoMessage('Invalid or expired promo code.');
-      setDiscount(0);
-    }
-  };
+  // Must match backend exactly: /orders charges tier.price × quantity, with no
+  // service fee or discount support server-side yet (promo codes are backlog).
+  const total = selectedTier.price * quantity;
 
   // Safe Apple Pay / Google Pay selector
   const handleSelectDigitalPay = (method: 'apple_pay' | 'google_pay') => {
@@ -88,9 +69,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         selectedTier.name,
         quantity,
       );
-      // Keep UI total (fees) in sync when backend returns face value only
-      const ticket: Ticket = { ...newTicket, totalPrice: total || newTicket.totalPrice };
-      onSuccess(ticket);
+      onSuccess(newTicket);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Checkout failed';
       setErrorMessage(message);
@@ -202,41 +181,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               </div>
             </div>
 
-            {/* 3. Promo Code Input */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-[#7b7486] block">
-                Promo Code
-              </label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Tag className="w-4 h-4 text-[#7b7486] absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={promoCode}
-                    onChange={(e) => setPromoCode(e.target.value)}
-                    placeholder="Try 'SNAP10' or 'SAVE20'"
-                    className="w-full h-11 pl-9 pr-3 text-xs bg-white rounded-xl border border-[#ccc3d7]/40 uppercase font-mono focus:ring-2 focus:ring-[#6C2BD9] outline-none"
-                  />
-                </div>
-                <button
-                  onClick={handleApplyPromo}
-                  className="px-4 h-11 bg-[#edeef0] hover:bg-[#6C2BD9] hover:text-white rounded-xl text-xs font-bold transition-colors"
-                >
-                  Apply
-                </button>
-              </div>
-              {promoMessage && (
-                <p
-                  className={`text-[11px] font-medium ${
-                    discount > 0 ? 'text-emerald-600' : 'text-red-500'
-                  }`}
-                >
-                  {promoMessage}
-                </p>
-              )}
-            </div>
-
-            {/* 4. Payment Method Selection */}
+            {/* 3. Payment Method Selection */}
             <div className="space-y-2">
               <label className="text-xs font-bold uppercase tracking-wider text-[#7b7486] block">
                 Payment Method
@@ -285,26 +230,14 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               )}
             </div>
 
-            {/* 5. Summary Breakdown */}
+            {/* 4. Summary Breakdown */}
             <div className="p-4 bg-[#f9f9fb] rounded-2xl border border-[#edeef0] space-y-2 text-xs">
               <div className="flex justify-between text-[#7b7486]">
                 <span>
                   {selectedTier.name} × {quantity}
                 </span>
-                <span className="font-mono">${subtotal.toFixed(2)}</span>
+                <span className="font-mono">${total.toFixed(2)}</span>
               </div>
-              {serviceFee > 0 && (
-                <div className="flex justify-between text-[#7b7486]">
-                  <span>Processing & Service Fee</span>
-                  <span className="font-mono">${serviceFee.toFixed(2)}</span>
-                </div>
-              )}
-              {discount > 0 && (
-                <div className="flex justify-between text-emerald-600 font-medium">
-                  <span>Discount Applied</span>
-                  <span className="font-mono">-${discount.toFixed(2)}</span>
-                </div>
-              )}
               <div className="border-t border-[#ccc3d7]/40 pt-2 flex justify-between items-center text-sm font-bold text-[#1a1c1d]">
                 <span>Total Due</span>
                 <span className="font-heading text-lg text-[#6C2BD9]">

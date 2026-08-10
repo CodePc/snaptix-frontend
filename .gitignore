@@ -26,3 +26,5 @@ hs_err_pid*
 # Local secrets / runtime
 *.pem
 *.p12
+env/*.env
+!env/*.env.example

@@ -18,11 +18,13 @@ interface QRCheckInScannerModalProps {
   events: OrganiserEventData[];
   defaultEventId?: string;
   onClose: () => void;
-  onCheckIn?: (
+  /** Manual desk check-in by real passId — awaited so we can react to backend validation errors. */
+  onCheckIn: (
     eventId: string,
-    attendeeId: string,
-  ) => { success: boolean; message: string; attendee?: AttendeeRecord } | void;
-  onCheckInAttendee?: (eventId: string, attendeeId: string) => void;
+    passId: string,
+  ) => Promise<{ success: boolean; message: string; attendee?: AttendeeRecord }>;
+  /** Pulls the latest roster from GET /events/{id}/attendees for the selected event. */
+  onRefreshAttendees?: (eventId: string) => void;
 }
 
 export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
@@ -31,7 +33,7 @@ export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
   defaultEventId,
   onClose,
   onCheckIn,
-  onCheckInAttendee,
+  onRefreshAttendees,
 }) => {
   const [selectedEventId, setSelectedEventId] = useState<string>(
     defaultEventId || events[0]?.id || '',
@@ -54,6 +56,14 @@ export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
       setSelectedEventId(events[0].id);
     }
   }, [events, defaultEventId, selectedEventId]);
+
+  // Pull a fresh roster whenever the modal opens or the selected event changes.
+  useEffect(() => {
+    if (isOpen && selectedEventId) {
+      onRefreshAttendees?.(selectedEventId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, selectedEventId]);
 
   if (!isOpen) return null;
 
@@ -115,7 +125,7 @@ export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
               pricePaid: 0,
             },
           });
-          if (onCheckInAttendee) onCheckInAttendee(activeEvent.id, parsed.passId);
+          onRefreshAttendees?.(activeEvent.id);
         } else if (msg.includes('ALREADY') || msg.includes('CHECKED')) {
           playBeep(false);
           setScanStatus({
@@ -143,7 +153,8 @@ export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
       }
     }
 
-    // Legacy mock roster fallback (demo attendees without live SNAPTIX payload)
+    // Fall back to matching a real roster entry (from GET /events/{id}/attendees) by
+    // passId / booking code / name, then hit the manual desk check-in endpoint.
     const trimmed = code.trim().toUpperCase();
     const found = activeEvent.attendees.find(
       (a) =>
@@ -157,69 +168,40 @@ export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
       playBeep(false);
       setScanStatus({
         type: 'invalid',
-        message: 'Paste SNAPTIX|passId|token from the live QR, or a roster code.',
+        message: 'Paste SNAPTIX|passId|token from the live QR, or a roster passId/booking code.',
       });
       setIsVerifying(false);
       return;
     }
 
-    if (found.checkedIn) {
+    const res = await onCheckIn(activeEvent.id, found.id);
+    if (res.success) {
+      playBeep(true);
+      setScanStatus({ type: 'success', message: res.message, attendee: res.attendee || found });
+    } else {
       playBeep(false);
       setScanStatus({
-        type: 'already',
-        message: `Pass ALREADY checked in at ${found.checkInTime || 'earlier today'}`,
-        attendee: found,
+        type: res.message.includes('ALREADY') ? 'already' : 'invalid',
+        message: res.message,
+        attendee: res.attendee || found,
       });
-      setIsVerifying(false);
-      return;
     }
-
-    if (onCheckIn) {
-      const res = onCheckIn(activeEvent.id, found.id);
-      if (res && typeof res === 'object') {
-        if (res.success) {
-          playBeep(true);
-          setScanStatus({
-            type: 'success',
-            message: res.message,
-            attendee: res.attendee || { ...found, checkedIn: true, checkInTime: 'Just now' },
-          });
-        } else {
-          playBeep(false);
-          setScanStatus({
-            type: res.message.includes('ALREADY') ? 'already' : 'invalid',
-            message: res.message,
-            attendee: res.attendee || found,
-          });
-        }
-        setManualCode('');
-        setIsVerifying(false);
-        return;
-      }
-    } else if (onCheckInAttendee) {
-      onCheckInAttendee(activeEvent.id, found.id);
-    }
-    playBeep(true);
-    setScanStatus({
-      type: 'success',
-      message: `Verified & Checked in: ${found.name}`,
-      attendee: { ...found, checkedIn: true, checkInTime: 'Just now' },
-    });
     setManualCode('');
     setIsVerifying(false);
   };
 
-  const handleSimulateScanNext = () => {
+  const handleCheckInNextPending = () => {
     if (!activeEvent) return;
     const pending = activeEvent.attendees.find((a) => !a.checkedIn);
     if (pending) {
-      void handleProcessCode(pending.ticketCode);
-    } else if (activeEvent.attendees.length > 0) {
-      void handleProcessCode(activeEvent.attendees[0].ticketCode);
+      void handleProcessCode(pending.id);
     } else {
       setScanStatus({
         type: 'invalid',
-        message: 'No roster attendees — paste a live SNAPTIX|passId|token instead.',
+        message:
+          activeEvent.attendees.length > 0
+            ? 'Everyone on the roster is already checked in.'
+            : 'No roster attendees yet — paste a live SNAPTIX|passId|token instead.',
       });
     }
   };
@@ -343,11 +325,12 @@ export const QRCheckInScannerModal: React.FC<QRCheckInScannerModalProps> = ({
             </div>
 
             <button
-              onClick={handleSimulateScanNext}
-              className="w-full py-2.5 bg-purple-50 hover:bg-purple-100 text-[#6C2BD9] font-heading font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 border border-purple-200 transition-colors"
+              onClick={handleCheckInNextPending}
+              disabled={isVerifying}
+              className="w-full py-2.5 bg-purple-50 hover:bg-purple-100 text-[#6C2BD9] font-heading font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 border border-purple-200 transition-colors disabled:opacity-60"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Simulate Scan Next Roster Ticket</span>
+              <span>Check In Next Pending Attendee</span>
             </button>
 
             <div className="w-full space-y-1.5 pt-1">

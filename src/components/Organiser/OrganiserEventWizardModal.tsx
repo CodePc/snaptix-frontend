@@ -24,6 +24,54 @@ import {
 import { OrganiserEventData, EventTier, OrganiserPersona } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
 
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function toDateInputValue(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function toTimeInputValue(d: Date): string {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** LocalDateTime strings (no zone) like "2026-11-30T20:00:00" parse as local wall-clock time in JS. */
+function parseIsoToLocalParts(iso?: string): { dateInput: string; timeInput: string } | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return { dateInput: toDateInputValue(d), timeInput: toTimeInputValue(d) };
+}
+
+function formatTime12h(time24: string): string {
+  const [h, m] = time24.split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return time24;
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${pad2(m)} ${period}`;
+}
+
+/** Builds the display date string + shorthand parts from a "YYYY-MM-DD" input value. */
+function formatDisplayDateParts(dateInput: string): {
+  date: string;
+  monthShort: string;
+  dayNumber: string;
+} {
+  const [y, mo, d] = dateInput.split('-').map(Number);
+  const dt = new Date(y || 2026, (mo || 1) - 1, d || 1);
+  return {
+    date: dt.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }),
+    monthShort: dt.toLocaleDateString('en-US', { month: 'short' }).toUpperCase(),
+    dayNumber: String(dt.getDate()),
+  };
+}
+
 interface OrganiserEventWizardModalProps {
   isOpen: boolean;
   initialEvent?: OrganiserEventData | null;
@@ -67,16 +115,18 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
   const [aiConceptInput, setAiConceptInput] = useState<string>('');
   const [showAiBox, setShowAiBox] = useState<boolean>(false);
 
-  // Step 2: Date, Time & Location
-  const [date, setDate] = useState<string>(
-    initialEvent?.date || 'Saturday, Nov 30, 2024'
+  // Step 2: Date, Time & Location — real <input type="date"/"time"> pickers feeding
+  // a real ISO/LocalDateTime eventDate, instead of free-text date/time strings.
+  const defaultEventDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const initialParsed = parseIsoToLocalParts(initialEvent?.eventDateIso);
+  const [eventDateInput, setEventDateInput] = useState<string>(
+    initialParsed?.dateInput || toDateInputValue(defaultEventDate)
   );
-  const [time, setTime] = useState<string>(
-    initialEvent?.time || '8:00 PM - 1:00 AM'
+  const [startTimeInput, setStartTimeInput] = useState<string>(
+    initialParsed?.timeInput || '20:00'
   );
-  const [doorsOpen, setDoorsOpen] = useState<string>(
-    initialEvent?.doorsOpen || '7:00 PM'
-  );
+  const [endTimeInput, setEndTimeInput] = useState<string>('01:00');
+  const [doorsOpenTimeInput, setDoorsOpenTimeInput] = useState<string>('19:00');
   const [venue, setVenue] = useState<string>(initialEvent?.venue || '');
   const [city, setCity] = useState<string>(initialEvent?.city || 'New York, NY');
   const [address, setAddress] = useState<string>(
@@ -124,9 +174,11 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
       setCategory(initialEvent.category);
       setDescription(initialEvent.description || '');
       setImage(initialEvent.image);
-      setDate(initialEvent.date);
-      setTime(initialEvent.time);
-      setDoorsOpen(initialEvent.doorsOpen || '7:00 PM');
+      const parsed = parseIsoToLocalParts(initialEvent.eventDateIso);
+      if (parsed) {
+        setEventDateInput(parsed.dateInput);
+        setStartTimeInput(parsed.timeInput);
+      }
       setVenue(initialEvent.venue);
       setCity(initialEvent.city);
       setAddress(initialEvent.locationCoords?.address || '');
@@ -231,13 +283,21 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !venue.trim()) return;
+    if (!title.trim() || !venue.trim() || !eventDateInput || !startTimeInput) return;
 
     // Determine status based on persona & current state
     let finalStatus: OrganiserEventData['status'] = status;
     if (currentPersona === 'moderator' && status === 'published') {
       finalStatus = 'pending_approval';
     }
+
+    // LocalDateTime string (no zone) — matches the backend's CreateEventRequest.eventDate.
+    const eventDateIso = `${eventDateInput}T${startTimeInput}:00`;
+    const { date, monthShort, dayNumber } = formatDisplayDateParts(eventDateInput);
+    const time = endTimeInput
+      ? `${formatTime12h(startTimeInput)} - ${formatTime12h(endTimeInput)}`
+      : formatTime12h(startTimeInput);
+    const doorsOpen = doorsOpenTimeInput ? formatTime12h(doorsOpenTimeInput) : undefined;
 
     const savedEvent: OrganiserEventData = {
       id: initialEvent?.id || `org-evt-${Date.now()}`,
@@ -247,10 +307,11 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
       badge: isFreeEventCalculated ? 'FREE RSVP' : initialEvent?.badge || 'NEW',
       badgeType: isFreeEventCalculated ? 'success' : 'primary',
       date,
-      monthShort: initialEvent?.monthShort || 'NOV',
-      dayNumber: initialEvent?.dayNumber || '30',
+      monthShort,
+      dayNumber,
       time,
       doorsOpen,
+      eventDateIso,
       venue,
       city,
       distance: initialEvent?.distance || 'In your area',
@@ -535,14 +596,13 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="font-bold text-[#1a1c1d] block mb-1">
-                      Date *
+                      Event Date *
                     </label>
                     <input
-                      type="text"
+                      type="date"
                       required
-                      value={date}
-                      onChange={(e) => setDate(e.target.value)}
-                      placeholder="e.g. Saturday, Nov 30, 2024"
+                      value={eventDateInput}
+                      onChange={(e) => setEventDateInput(e.target.value)}
                       className="w-full h-11 px-3.5 bg-[#f9f9fb] rounded-xl border border-[#ccc3d7]/50 focus:ring-2 focus:ring-[#6C2BD9] outline-none"
                     />
                   </div>
@@ -552,27 +612,39 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
                       Doors Open Time
                     </label>
                     <input
-                      type="text"
-                      value={doorsOpen}
-                      onChange={(e) => setDoorsOpen(e.target.value)}
-                      placeholder="e.g. 7:00 PM"
+                      type="time"
+                      value={doorsOpenTimeInput}
+                      onChange={(e) => setDoorsOpenTimeInput(e.target.value)}
                       className="w-full h-11 px-3.5 bg-[#f9f9fb] rounded-xl border border-[#ccc3d7]/50 focus:ring-2 focus:ring-[#6C2BD9] outline-none"
                     />
                   </div>
                 </div>
 
-                <div>
-                  <label className="font-bold text-[#1a1c1d] block mb-1">
-                    Event Schedule / Hours *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={time}
-                    onChange={(e) => setTime(e.target.value)}
-                    placeholder="e.g. 8:00 PM - 1:00 AM"
-                    className="w-full h-11 px-3.5 bg-[#f9f9fb] rounded-xl border border-[#ccc3d7]/50 focus:ring-2 focus:ring-[#6C2BD9] outline-none"
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-[#1a1c1d] block mb-1">
+                      Show Start Time *
+                    </label>
+                    <input
+                      type="time"
+                      required
+                      value={startTimeInput}
+                      onChange={(e) => setStartTimeInput(e.target.value)}
+                      className="w-full h-11 px-3.5 bg-[#f9f9fb] rounded-xl border border-[#ccc3d7]/50 focus:ring-2 focus:ring-[#6C2BD9] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-[#1a1c1d] block mb-1">
+                      Show End Time
+                    </label>
+                    <input
+                      type="time"
+                      value={endTimeInput}
+                      onChange={(e) => setEndTimeInput(e.target.value)}
+                      className="w-full h-11 px-3.5 bg-[#f9f9fb] rounded-xl border border-[#ccc3d7]/50 focus:ring-2 focus:ring-[#6C2BD9] outline-none"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -741,6 +813,14 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
                     <p>Total Capacity: <span className="font-bold text-[#6C2BD9]">{totalCapacity} tickets</span></p>
                     <p>Venue: <span className="font-bold">{venue}, {city}</span></p>
                     <p>Pricing: <span className="font-bold font-mono text-emerald-600">{isFreeEventCalculated ? 'FREE RSVP ($0)' : `$${minPrice}`}</span></p>
+                    <p className="col-span-2">
+                      Date & Time:{' '}
+                      <span className="font-bold text-[#1a1c1d]">
+                        {eventDateInput ? formatDisplayDateParts(eventDateInput).date : 'Not set'} •{' '}
+                        {startTimeInput ? formatTime12h(startTimeInput) : '—'}
+                        {endTimeInput ? ` - ${formatTime12h(endTimeInput)}` : ''}
+                      </span>
+                    </p>
                   </div>
                 </div>
 
@@ -846,6 +926,10 @@ export const OrganiserEventWizardModal: React.FC<OrganiserEventWizardModalProps>
                     }
                     if (currentStep === 2 && !venue.trim()) {
                       alert('Please enter a venue name');
+                      return;
+                    }
+                    if (currentStep === 2 && (!eventDateInput || !startTimeInput)) {
+                      alert('Please pick an event date and start time');
                       return;
                     }
                     setCurrentStep(currentStep + 1);

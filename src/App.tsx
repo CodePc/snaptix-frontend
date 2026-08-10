@@ -72,14 +72,18 @@ import {
   buyResaleListingApi,
   createEmailCampaignApi,
   createEventApi,
+  fetchEventAttendees,
   fetchMyPasses,
+  fetchOrganiserAnalyticsApi,
   fetchOrganiserEvents,
   fetchPublishedEvents,
   fetchResaleListings,
   listPassForResaleApi,
   logoutApi,
+  manualCheckInApi,
   sendEmailCampaignApi,
   updateEventStatusApi,
+  updateTierCapacityApi,
 } from './services/snaptixApi';
 import { organiserEventToCreatePayload } from './services/mappers';
 
@@ -501,6 +505,7 @@ export default function App() {
         monthShort: persisted.monthShort,
         dayNumber: persisted.dayNumber,
         time: persisted.time,
+        eventDateIso: persisted.eventDateIso,
         venue: persisted.venue,
         city: persisted.city,
         price: persisted.price,
@@ -575,24 +580,35 @@ export default function App() {
     );
   };
 
-  // Organiser: Update Tier Capacity
-  const handleUpdateTierCapacity = (
+  // Organiser: Update Tier Capacity — "available" is remaining slots; the backend
+  // tracks total capacity, so we translate: newCapacity = ticketsSold + newAvailable.
+  const handleUpdateTierCapacity = async (
     eventId: string,
     tierId: string,
     newAvailable: number
   ) => {
-    setOrganiserEvents((prev) =>
-      prev.map((evt) => {
-        if (evt.id === eventId) {
-          const updatedTiers = evt.tiers.map((t) =>
-            t.id === tierId ? { ...t, available: Math.max(0, newAvailable) } : t
+    const event = organiserEvents.find((e) => e.id === eventId);
+    const tier = event?.tiers.find((t) => t.id === tierId);
+    const ticketsSold = tier?.ticketsSold || 0;
+    const newCapacity = Math.max(0, ticketsSold + Math.max(0, newAvailable));
+
+    try {
+      const updatedTier = await updateTierCapacityApi(eventId, tierId, newCapacity);
+      setOrganiserEvents((prev) =>
+        prev.map((evt) => {
+          if (evt.id !== eventId) return evt;
+          const updatedTiers = evt.tiers.map((t) => (t.id === tierId ? updatedTier : t));
+          const totalCapacity = updatedTiers.reduce(
+            (acc, t) => acc + (t.ticketsSold || 0) + t.available,
+            0
           );
-          const totalCapacity = updatedTiers.reduce((acc, t) => acc + t.available, 0);
           return { ...evt, tiers: updatedTiers, totalCapacity };
-        }
-        return evt;
-      })
-    );
+        })
+      );
+    } catch (err) {
+      console.error('Failed to update tier capacity', err);
+      setApiError(err instanceof Error ? err.message : 'Failed to update tier capacity');
+    }
   };
 
   // Organiser: Toggle Publish status
@@ -608,68 +624,51 @@ export default function App() {
     );
   };
 
-  // Organiser: Check-In Attendee Scan
-  const handleCheckInAttendee = (
-    eventId: string,
-    attendeeId: string
-  ): { success: boolean; message: string; attendee?: AttendeeRecord } => {
-    let resultAttendee: AttendeeRecord | undefined;
-    let alreadyChecked = false;
-    let found = false;
-
-    setOrganiserEvents((prev) =>
-      prev.map((evt) => {
-        if (evt.id === eventId || eventId === 'all') {
-          const updatedAttendees = evt.attendees.map((att) => {
-            if (
-              att.id === attendeeId ||
-              att.bookingId === attendeeId ||
-              att.ticketCode === attendeeId
-            ) {
-              found = true;
-              if (att.checkedIn) {
-                alreadyChecked = true;
-                resultAttendee = att;
-                return att;
-              }
-              const checkedAtt: AttendeeRecord = {
-                ...att,
-                checkedIn: true,
-                checkInTime: 'Just now (Gate A Scanner)',
-              };
-              resultAttendee = checkedAtt;
-              return checkedAtt;
-            }
-            return att;
-          });
-
-          const checkedCount = updatedAttendees.filter((a) => a.checkedIn).length;
-          return { ...evt, attendees: updatedAttendees, checkedInCount: checkedCount };
-        }
-        return evt;
-      })
-    );
-
-    if (alreadyChecked) {
-      return {
-        success: false,
-        message: `ALREADY SCANNED: Ticket was checked in at ${resultAttendee?.checkInTime}`,
-        attendee: resultAttendee,
-      };
+  // Organiser: Fetch the real attendee roster for one event (GET /events/{id}/attendees)
+  const refreshAttendeesForEvent = async (eventId: string) => {
+    try {
+      const attendees = await fetchEventAttendees(eventId);
+      setOrganiserEvents((prev) =>
+        prev.map((evt) =>
+          evt.id === eventId
+            ? { ...evt, attendees, checkedInCount: attendees.filter((a) => a.checkedIn).length }
+            : evt
+        )
+      );
+    } catch (err) {
+      console.error('Failed to load attendee roster', err);
     }
+  };
 
-    if (found && resultAttendee) {
+  // Organiser: Manual desk check-in by real passId (no QR token required).
+  // Used both by the roster's "Check In" button (fire-and-forget) and by the
+  // QR scanner's real-data-only "Check In Next Pending" shortcut (awaited).
+  const handleCheckInAttendee = async (
+    eventId: string,
+    passId: string
+  ): Promise<{ success: boolean; message: string; attendee?: AttendeeRecord }> => {
+    try {
+      const attendee = await manualCheckInApi(eventId, passId);
+      setOrganiserEvents((prev) =>
+        prev.map((evt) => {
+          if (evt.id !== eventId) return evt;
+          const attendees = evt.attendees.map((a) => (a.id === attendee.id ? attendee : a));
+          return { ...evt, attendees, checkedInCount: attendees.filter((a) => a.checkedIn).length };
+        })
+      );
       return {
         success: true,
-        message: `VALID ENTRY PASS: Welcome ${resultAttendee.name} (${resultAttendee.tierName})`,
-        attendee: resultAttendee,
+        message: `VALID ENTRY PASS: Welcome ${attendee.name} (${attendee.tierName})`,
+        attendee,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Check-in failed';
+      const alreadyChecked = /already|checked_in|checked in/i.test(message);
+      return {
+        success: false,
+        message: alreadyChecked ? `ALREADY SCANNED: ${message}` : `INVALID PASS: ${message}`,
       };
     }
-
-    return {
-      success: false,
-      message: 'INVALID PASS: QR code not found in guestlist roster.',
-    };
   };
 
 
@@ -1141,7 +1140,10 @@ export default function App() {
                 events={organiserEvents}
                 selectedEventId={manageSelectedEventId}
                 currentPersona={currentPersona}
-                onSelectEvent={(id) => setManageSelectedEventId(id)}
+                onSelectEvent={(id) => {
+                  setManageSelectedEventId(id);
+                  if (id) void refreshAttendeesForEvent(id);
+                }}
                 onOpenCreateWizard={() => {
                   setWizardEditEvent(null);
                   setIsEventWizardOpen(true);
@@ -1151,7 +1153,7 @@ export default function App() {
                   setIsScannerOpen(true);
                 }}
                 onCheckInAttendee={(eventId, attendeeId) => {
-                  handleCheckInAttendee(eventId, attendeeId);
+                  void handleCheckInAttendee(eventId, attendeeId);
                 }}
                 onUpdateEventStatus={handleUpdateOrganiserEventStatus}
                 onUpdateTierCapacity={handleUpdateTierCapacity}
@@ -1202,7 +1204,7 @@ export default function App() {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.18 }}
             >
-              <OrganiserAnalyticsView events={organiserEvents} />
+              <OrganiserAnalyticsView events={organiserEvents} onFetchAnalytics={fetchOrganiserAnalyticsApi} />
             </motion.div>
           )}
 
@@ -1296,6 +1298,7 @@ export default function App() {
         defaultEventId={scannerSelectedEventId}
         onClose={() => setIsScannerOpen(false)}
         onCheckIn={handleCheckInAttendee}
+        onRefreshAttendees={refreshAttendeesForEvent}
       />
 
       {/* MODAL: NOTIFICATIONS CENTER */}

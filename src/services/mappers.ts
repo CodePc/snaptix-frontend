@@ -1,4 +1,12 @@
-import type { EventItem, EventTier, OrganiserEventData, ResaleListing, Ticket } from '../types';
+import type {
+  AttendeeRecord,
+  EventItem,
+  EventTier,
+  OrganiserAnalytics,
+  OrganiserEventData,
+  ResaleListing,
+  Ticket,
+} from '../types';
 
 export type BackendTier = {
   id: string;
@@ -59,6 +67,38 @@ export type BackendResalePurchase = {
   message: string;
 };
 
+export type BackendAttendee = {
+  passId: string;
+  orderId?: string;
+  fullName?: string;
+  email?: string;
+  tierName: string;
+  passStatus: string;
+  issuedAt?: string;
+};
+
+export type BackendDailyRevenuePoint = {
+  date: string;
+  revenue: number;
+};
+
+export type BackendTierBreakdownPoint = {
+  tierName: string;
+  ticketsSold: number;
+  revenue: number;
+};
+
+export type BackendOrganiserAnalytics = {
+  totalGrossRevenue: number;
+  totalTicketsSold: number;
+  totalCapacity: number;
+  checkedInCount: number;
+  avgOrderValue: number;
+  resaleRoyalties: number;
+  dailyRevenue: BackendDailyRevenuePoint[];
+  tierBreakdown: BackendTierBreakdownPoint[];
+};
+
 const CATEGORY_FALLBACK = 'Music' as const;
 
 function parseEventDate(iso: string): Date {
@@ -88,9 +128,13 @@ function mapTier(t: BackendTier): EventTier {
     price: Number(t.price) || 0,
     description: `${t.name} access`,
     available: Math.max(0, (t.capacity || 0) - (t.ticketsSold || 0)),
+    ticketsSold: t.ticketsSold || 0,
     perks: ['Digital dynamic pass', 'Gate QR check-in'],
   };
 }
+
+/** Maps the raw tier entity returned by PUT /events/{id}/tiers/{tierId}. */
+export const mapBackendTierToEventTier = mapTier;
 
 function normalizeCategory(category: string): EventItem['category'] {
   const allowed: EventItem['category'][] = [
@@ -125,6 +169,7 @@ export function mapBackendEventToEventItem(e: BackendEvent): EventItem {
     monthShort: parts.monthShort,
     dayNumber: parts.dayNumber,
     time: parts.time,
+    eventDateIso: e.eventDate,
     venue: e.venue,
     city: e.city,
     price: minPrice,
@@ -155,12 +200,17 @@ export function mapBackendEventToOrganiserEvent(e: BackendEvent): OrganiserEvent
   const base = mapBackendEventToEventItem(e);
   const ticketsSold = (e.tiers || []).reduce((acc, t) => acc + (t.ticketsSold || 0), 0);
   const totalCapacity = (e.tiers || []).reduce((acc, t) => acc + (t.capacity || 0), 0);
+  // Weighted by each tier's own price, not tickets * cheapest tier's price.
+  const grossSales = (e.tiers || []).reduce(
+    (acc, t) => acc + (t.ticketsSold || 0) * (Number(t.price) || 0),
+    0,
+  );
   return {
     ...base,
     status: (e.status as OrganiserEventData['status']) || 'published',
     totalCapacity,
     ticketsSold,
-    grossSales: ticketsSold * (base.price || 0),
+    grossSales,
     checkedInCount: 0,
     attendees: [],
     createdByPersona: (e.createdByPersona as 'admin' | 'moderator') || 'admin',
@@ -263,11 +313,50 @@ export function mapResaleListing(r: BackendResaleListing, events: EventItem[]): 
   };
 }
 
+export function mapAttendeeResponse(a: BackendAttendee): AttendeeRecord {
+  const passId = String(a.passId);
+  const isCheckedIn = a.passStatus === 'CHECKED_IN';
+  return {
+    id: passId,
+    name: a.fullName || 'Ticket Holder',
+    email: a.email || '',
+    tierName: a.tierName || 'Pass',
+    seat: `PASS-${passId.slice(0, 4).toUpperCase()}`,
+    bookingId: `#${String(a.orderId || passId).slice(0, 8).toUpperCase()}`,
+    ticketCode: passId,
+    checkedIn: isCheckedIn,
+    checkInTime: isCheckedIn ? 'Checked in' : undefined,
+    purchaseDate: a.issuedAt || new Date().toISOString(),
+    pricePaid: 0,
+  };
+}
+
+export function mapOrganiserAnalytics(a: BackendOrganiserAnalytics): OrganiserAnalytics {
+  return {
+    totalGrossRevenue: Number(a.totalGrossRevenue) || 0,
+    totalTicketsSold: a.totalTicketsSold || 0,
+    totalCapacity: a.totalCapacity || 0,
+    checkedInCount: a.checkedInCount || 0,
+    avgOrderValue: Number(a.avgOrderValue) || 0,
+    resaleRoyalties: Number(a.resaleRoyalties) || 0,
+    dailyRevenue: (a.dailyRevenue || []).map((d) => ({
+      date: d.date,
+      revenue: Number(d.revenue) || 0,
+    })),
+    tierBreakdown: (a.tierBreakdown || []).map((t) => ({
+      tierName: t.tierName,
+      ticketsSold: t.ticketsSold || 0,
+      revenue: Number(t.revenue) || 0,
+    })),
+  };
+}
+
 /** Build CreateEventRequest payload from organiser wizard UI model. */
 export function organiserEventToCreatePayload(event: OrganiserEventData) {
-  // Prefer ISO from location; fall back to "now + 14 days"
+  // The wizard's date/time pickers populate eventDateIso as a LocalDateTime string
+  // ("YYYY-MM-DDTHH:mm:00"); fall back to "now + 14 days" only if it's missing.
   const fallback = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-  const eventDate = fallback.toISOString().slice(0, 19);
+  const eventDate = event.eventDateIso || fallback.toISOString().slice(0, 19);
 
   return {
     title: event.title,

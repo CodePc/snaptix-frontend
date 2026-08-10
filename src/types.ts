@@ -4,6 +4,8 @@ export interface EventTier {
   price: number;
   description: string;
   available: number;
+  /** Tickets already sold for this tier (organiser view only; used to bound capacity edits). */
+  ticketsSold?: number;
   perks: string[];
 }
 
@@ -28,6 +30,8 @@ export interface EventItem {
   dayNumber?: string;
   time: string;
   doorsOpen?: string;
+  /** Real backend LocalDateTime (no zone), e.g. "2026-11-30T20:00:00" — source of truth for date/time editing. */
+  eventDateIso?: string;
   venue: string;
   city: string;
   distance?: string;
@@ -156,6 +160,28 @@ export interface OrganiserEventData extends EventItem {
     bannerPrompt?: string;
     targetDemographics?: string;
   };
+}
+
+export interface DailyRevenuePoint {
+  date: string;
+  revenue: number;
+}
+
+export interface TierBreakdownPoint {
+  tierName: string;
+  ticketsSold: number;
+  revenue: number;
+}
+
+export interface OrganiserAnalytics {
+  totalGrossRevenue: number;
+  totalTicketsSold: number;
+  totalCapacity: number;
+  checkedInCount: number;
+  avgOrderValue: number;
+  resaleRoyalties: number;
+  dailyRevenue: DailyRevenuePoint[];
+  tierBreakdown: TierBreakdownPoint[];
 }
 
 export interface FinancialTransaction {

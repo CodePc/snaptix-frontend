@@ -24,6 +24,7 @@ import {
 import { UserRole } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
 import {
+  backendRoleToUi,
   facebookAuthApi,
   googleAuthApi,
   loginApi,
@@ -32,6 +33,8 @@ import {
   registerApi,
   roleToBackend,
 } from '../../services/snaptixApi';
+import { GOOGLE_CLIENT_ID, requestGoogleIdToken } from '../../services/googleIdentity';
+import { FACEBOOK_APP_ID, requestFacebookAccessToken } from '../../services/facebookSdk';
 
 interface AuthPortalViewProps {
   initialRole?: UserRole;
@@ -74,10 +77,19 @@ export const AuthPortalView: React.FC<AuthPortalViewProps> = ({
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
   const completeLogin = (
-    role: UserRole,
-    auth: { name?: string; email: string },
+    preferredRole: UserRole,
+    auth: { name?: string; email: string; role?: string },
     fallbackName: string,
   ) => {
+    // Trust the JWT role from the API — UI selection alone cannot create events
+    // if the account is still ATTENDEE (POST /events → 403).
+    const role = auth.role ? backendRoleToUi(auth.role) : preferredRole;
+    if (preferredRole === 'organizer' && role !== 'organizer') {
+      setStatusMessage(
+        'This account is an Attendee. Choose Organizer mode and sign in again, or use Demo Host.',
+      );
+      return;
+    }
     onLoginSuccess(role, {
       name: auth.name || fallbackName,
       email: auth.email,
@@ -103,26 +115,62 @@ export const AuthPortalView: React.FC<AuthPortalViewProps> = ({
     return `${countryCode}${digits}`;
   };
 
-  // Google Login Handler — local mock idToken when GOOGLE_CLIENT_ID unset on backend
-  const handleGoogleLogin = async () => {
+  /** Explicit demo SSO only — never called implicitly from the Google/FB buttons. */
+  const completeMockSocialLogin = async (provider: 'google' | 'facebook') => {
     setIsLoading(true);
-    const email =
-      selectedRole === 'attendee' ? 'alex.chen@gmail.com' : 'promoter@apexentertainment.io';
-    const fullName =
+    const fallbackName =
       selectedRole === 'attendee' ? 'Alex Chen' : 'Apex Entertainment Group';
-    const sub = selectedRole === 'attendee' ? 'google-attendee-demo' : 'google-organiser-demo';
-    setStatusMessage(
-      selectedRole === 'attendee'
-        ? 'Connecting with Google Account...'
-        : 'Authorizing Google Workspace SSO...',
-    );
     try {
+      if (provider === 'google') {
+        const email =
+          selectedRole === 'attendee' ? 'alex.chen@gmail.com' : 'promoter@apexentertainment.io';
+        const sub =
+          selectedRole === 'attendee' ? 'google-attendee-demo' : 'google-organiser-demo';
+        const auth = await googleAuthApi({
+          idToken: `mock|${sub}|${email}|${fallbackName}`,
+          role: roleToBackend(selectedRole),
+          fullName: fallbackName,
+        });
+        completeLogin(selectedRole, auth, fallbackName);
+      } else {
+        const email =
+          selectedRole === 'attendee' ? 'alex.chen.fb@example.com' : 'promoter.fb@apexentertainment.io';
+        const fbId =
+          selectedRole === 'attendee' ? 'facebook-attendee-demo' : 'facebook-organiser-demo';
+        const auth = await facebookAuthApi({
+          accessToken: `mock|${fbId}|${email}|${fallbackName}`,
+          role: roleToBackend(selectedRole),
+          fallbackName,
+        });
+        completeLogin(selectedRole, auth, fallbackName);
+      }
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : 'Demo social login failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Real Google popup only when VITE_GOOGLE_CLIENT_ID is set (see docs/OAUTH_SETUP.md).
+  const handleGoogleLogin = async () => {
+    if (!GOOGLE_CLIENT_ID) {
+      setStatusMessage(
+        'Real Google login needs VITE_GOOGLE_CLIENT_ID (+ backend GOOGLE_CLIENT_ID). See docs/OAUTH_SETUP.md — or use Demo login below.',
+      );
+      return;
+    }
+    setIsLoading(true);
+    const fallbackName =
+      selectedRole === 'attendee' ? 'Alex Chen' : 'Apex Entertainment Group';
+    try {
+      setStatusMessage('Opening Google sign-in…');
+      const idToken = await requestGoogleIdToken();
       const auth = await googleAuthApi({
-        idToken: `mock|${sub}|${email}|${fullName}`,
+        idToken,
         role: roleToBackend(selectedRole),
-        fullName,
+        fullName: fallbackName,
       });
-      completeLogin(selectedRole, auth, fullName);
+      completeLogin(selectedRole, auth, fallbackName);
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : 'Google login failed');
     } finally {
@@ -130,37 +178,26 @@ export const AuthPortalView: React.FC<AuthPortalViewProps> = ({
     }
   };
 
-  // Apple Login Handler — no Apple backend; use email register/login demo identity
-  const handleAppleLogin = async () => {
-    setIsLoading(true);
-    setStatusMessage('Authenticating via Apple ID...');
-    try {
-      await finishEmailAuth(
-        selectedRole,
-        selectedRole === 'attendee' ? 'alex.chen@icloud.com' : 'admin@apexentertainment.io',
-        'password123',
-        selectedRole === 'attendee' ? 'Alex Chen' : 'Apex Entertainment',
-        true,
-      );
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : 'Login failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Facebook Login Handler
+  // Real Facebook popup only when VITE_FACEBOOK_APP_ID is set.
   const handleFacebookLogin = async () => {
+    if (!FACEBOOK_APP_ID) {
+      setStatusMessage(
+        'Real Facebook login needs VITE_FACEBOOK_APP_ID (+ backend FACEBOOK_APP_ID/SECRET). See docs/OAUTH_SETUP.md — or use Demo login below.',
+      );
+      return;
+    }
     setIsLoading(true);
-    setStatusMessage('Authenticating via Facebook SSO...');
+    const fallbackName =
+      selectedRole === 'attendee' ? 'Alex Chen' : 'Apex Entertainment Group';
     try {
+      setStatusMessage('Opening Facebook sign-in…');
+      const accessToken = await requestFacebookAccessToken();
       const auth = await facebookAuthApi({
-        email: 'alex.chen.fb@example.com',
-        fullName: 'Alex Chen',
-        role: roleToBackend('attendee'),
-        accessToken: 'demo-facebook-token',
+        accessToken,
+        role: roleToBackend(selectedRole),
+        fallbackName,
       });
-      completeLogin('attendee', auth, 'Alex Chen');
+      completeLogin(selectedRole, auth, fallbackName);
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : 'Facebook login failed');
     } finally {
@@ -168,22 +205,34 @@ export const AuthPortalView: React.FC<AuthPortalViewProps> = ({
     }
   };
 
-  // Quick 1-Click Demo Login
+  // Quick 1-Click Demo Login.
+  //
+  // Get-or-create, not register-only: this button gets clicked over and over
+  // across testing sessions against the same backend/DB, so it must succeed
+  // whether or not the demo account already exists. It previously always
+  // called registerApi(), which meant it only ever worked once per email,
+  // ever — every later click failed with "Email already exists".
   const handleQuickDemoLogin = async () => {
     setIsLoading(true);
+    const email =
+      selectedRole === 'attendee' ? 'alex.chen@gmail.com' : 'promoter@apexentertainment.io';
+    const fullName =
+      selectedRole === 'attendee' ? 'Alex Chen' : 'Apex Entertainment Group';
+    const password = 'password123';
     setStatusMessage(
       selectedRole === 'attendee'
         ? 'Logging in as Demo Explorer (Alex Chen)...'
         : 'Logging in as Demo Host (Apex Entertainment Group)...',
     );
     try {
-      await finishEmailAuth(
-        selectedRole,
-        selectedRole === 'attendee' ? 'alex.chen@gmail.com' : 'promoter@apexentertainment.io',
-        'password123',
-        selectedRole === 'attendee' ? 'Alex Chen' : 'Apex Entertainment Group',
-        true,
-      );
+      let auth;
+      try {
+        auth = await loginApi(email, password);
+      } catch {
+        // Demo account doesn't exist on this backend/DB yet — provision it once.
+        auth = await registerApi({ email, password, fullName, role: roleToBackend(selectedRole) });
+      }
+      completeLogin(selectedRole, auth, fullName);
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -486,13 +535,45 @@ export const AuthPortalView: React.FC<AuthPortalViewProps> = ({
                   )}
                 </div>
 
+                {(!GOOGLE_CLIENT_ID || !FACEBOOK_APP_ID) && (
+                  <p className="text-[11px] text-[#7b7486] leading-snug">
+                    {!GOOGLE_CLIENT_ID && !FACEBOOK_APP_ID
+                      ? 'Google/Facebook popups need OAuth app IDs in .env (see docs/OAUTH_SETUP.md). Until then use 1-Click Demo Login.'
+                      : !GOOGLE_CLIENT_ID
+                        ? 'Google popup needs VITE_GOOGLE_CLIENT_ID in .env (docs/OAUTH_SETUP.md).'
+                        : 'Facebook popup needs VITE_FACEBOOK_APP_ID in .env (docs/OAUTH_SETUP.md).'}
+                  </p>
+                )}
+
+                {statusMessage && !isLoading && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 space-y-1.5">
+                    <p>{statusMessage}</p>
+                    {(!GOOGLE_CLIENT_ID || !FACEBOOK_APP_ID) && (
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() =>
+                          completeMockSocialLogin(!GOOGLE_CLIENT_ID ? 'google' : 'facebook')
+                        }
+                        className="underline font-semibold text-[#6C2BD9]"
+                      >
+                        Continue with local demo SSO instead
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Logo-Only Icon Grid */}
-                <div className="grid grid-cols-4 gap-2.5">
+                <div className="grid grid-cols-3 gap-2.5">
                   {/* Google Logo Button */}
                   <button
                     type="button"
                     id="btn-logo-google"
-                    title="Sign in with Google / Gmail"
+                    title={
+                      GOOGLE_CLIENT_ID
+                        ? 'Sign in with Google / Gmail'
+                        : 'Set VITE_GOOGLE_CLIENT_ID for real Google login'
+                    }
                     aria-label="Sign in with Google"
                     disabled={isLoading}
                     onClick={handleGoogleLogin}
@@ -517,23 +598,6 @@ export const AuthPortalView: React.FC<AuthPortalViewProps> = ({
                         fill="#EA4335"
                         d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.35 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
                       />
-                    </svg>
-                  </button>
-
-                  {/* Apple Logo Button */}
-                  <button
-                    type="button"
-                    id="btn-logo-apple"
-                    title="Sign in with Apple"
-                    aria-label="Sign in with Apple"
-                    disabled={isLoading}
-                    onClick={handleAppleLogin}
-                    onMouseEnter={() => setActiveTooltip('Apple ID Fast Pass')}
-                    onMouseLeave={() => setActiveTooltip(null)}
-                    className="h-12 rounded-2xl bg-black hover:bg-slate-800 text-white flex items-center justify-center shadow-xs active:scale-95 transition-all group"
-                  >
-                    <svg className="w-5 h-5 fill-current transition-transform group-hover:scale-110" viewBox="0 0 24 24">
-                      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.62-.75 1.04-1.8 0.92-2.87-.9.04-1.99.6-2.63 1.35-.57.65-1.07 1.71-.93 2.74 1 .08 2.02-.47 2.64-1.22z" />
                     </svg>
                   </button>
 

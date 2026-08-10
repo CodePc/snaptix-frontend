@@ -31,7 +31,7 @@
 
 ## 1. System Architecture Diagram
 
-SnapTix follows an **Event-Driven Microservices Architecture** built with **Java 17 & Spring Boot 3**, backed by **PostgreSQL**, **Redis**, and a **React + Tailwind** front-end client.
+SnapTix follows an **Event-Driven Microservices Architecture** built with **Java 21 & Spring Boot 3**, backed by **PostgreSQL**, **Redis**, and a **React + Tailwind** front-end client.
 
 ```
                      +---------------------------------------+

@@ -32,6 +32,7 @@ interface OrganiserEventsViewProps {
   onOpenQRScanner: () => void;
   onCheckInAttendee: (eventId: string, attendeeId: string) => void;
   onUpdateEventStatus: (eventId: string, status: OrganiserEventData['status']) => void;
+  /** newAvailable = desired remaining slots; caller translates to a real total tier capacity. */
   onUpdateTierCapacity: (eventId: string, tierId: string, newAvailable: number) => void;
 }
 
@@ -50,6 +51,22 @@ export const OrganiserEventsView: React.FC<OrganiserEventsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [attendeeSearch, setAttendeeSearch] = useState<string>('');
   const [activeTabSub, setActiveTabSub] = useState<'attendees' | 'tiers' | 'details'>('attendees');
+  // Local drafts so typing doesn't fire an API call per keystroke — committed on blur/Enter.
+  const [tierCapacityDrafts, setTierCapacityDrafts] = useState<Record<string, string>>({});
+
+  const commitTierCapacity = (eventId: string, tier: EventTier) => {
+    const draft = tierCapacityDrafts[tier.id];
+    if (draft === undefined) return;
+    const parsed = Number(draft);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed !== tier.available) {
+      onUpdateTierCapacity(eventId, tier.id, Math.round(parsed));
+    }
+    setTierCapacityDrafts((prev) => {
+      const next = { ...prev };
+      delete next[tier.id];
+      return next;
+    });
+  };
 
   const pendingCount = events.filter((e) => e.status === 'pending_approval').length;
 
@@ -475,16 +492,28 @@ export const OrganiserEventsView: React.FC<OrganiserEventsViewProps> = ({
                           </div>
 
                           <div className="flex items-center gap-2">
-                            <span className="text-[11px] text-[#7b7486]">Capacity:</span>
+                            <span className="text-[11px] text-[#7b7486]">Available:</span>
                             <input
                               type="number"
-                              min="1"
-                              value={tier.available}
+                              min={0}
+                              value={tierCapacityDrafts[tier.id] ?? String(tier.available)}
                               onChange={(e) =>
-                                onUpdateTierCapacity(evt.id, tier.id, Number(e.target.value))
+                                setTierCapacityDrafts((prev) => ({
+                                  ...prev,
+                                  [tier.id]: e.target.value,
+                                }))
                               }
+                              onBlur={() => commitTierCapacity(evt.id, tier)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                              }}
                               className="w-20 h-8 px-2 bg-[#f9f9fb] border border-[#ccc3d7]/50 rounded-lg text-center font-mono font-bold text-xs"
                             />
+                            {tier.ticketsSold ? (
+                              <span className="text-[10px] text-[#7b7486]">
+                                ({tier.ticketsSold} sold)
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       ))}

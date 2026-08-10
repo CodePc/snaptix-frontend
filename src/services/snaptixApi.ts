@@ -4,18 +4,32 @@ import {
   setStoredAuth,
   StoredAuthUser,
 } from '../utils/api';
-import type { EventItem, OrganiserEventData, ResaleListing, Ticket } from '../types';
+import type {
+  AttendeeRecord,
+  EventItem,
+  EventTier,
+  OrganiserAnalytics,
+  OrganiserEventData,
+  ResaleListing,
+  Ticket,
+} from '../types';
 import {
+  mapAttendeeResponse,
   mapBackendEventToEventItem,
   mapBackendEventToOrganiserEvent,
+  mapBackendTierToEventTier,
   mapOrderToTicket,
+  mapOrganiserAnalytics,
   mapPassToTicket,
   mapResaleListing,
+  BackendAttendee,
   BackendEvent,
   BackendOrderResponse,
+  BackendOrganiserAnalytics,
   BackendPass,
   BackendResaleListing,
   BackendResalePurchase,
+  BackendTier,
 } from './mappers';
 
 export type AuthResponse = {
@@ -90,17 +104,17 @@ export async function googleAuthApi(input: {
   return storeAuth(data, input.fullName);
 }
 
+/** Real Facebook flow: backend verifies accessToken via Graph API debug_token + /me. */
 export async function facebookAuthApi(input: {
-  email: string;
-  fullName: string;
+  accessToken: string;
   role: 'ATTENDEE' | 'ORGANISER';
-  accessToken?: string;
+  fallbackName?: string;
 }): Promise<StoredAuthUser> {
   const data = await apiFetch<AuthResponse>('/auth/facebook', {
     method: 'POST',
-    body: JSON.stringify(input),
+    body: JSON.stringify({ accessToken: input.accessToken, role: input.role }),
   });
-  return storeAuth(data, input.fullName);
+  return storeAuth(data, input.fallbackName);
 }
 
 export async function phoneStartApi(phone: string): Promise<void> {
@@ -170,6 +184,38 @@ export async function updateEventStatusApi(eventId: string, status: string): Pro
     body: JSON.stringify({ status }),
   });
   return mapBackendEventToEventItem(updated);
+}
+
+export async function updateTierCapacityApi(
+  eventId: string,
+  tierId: string,
+  capacity: number,
+): Promise<EventTier> {
+  const updated = await apiFetch<BackendTier>(`/events/${eventId}/tiers/${tierId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ capacity }),
+  });
+  return mapBackendTierToEventTier(updated);
+}
+
+export async function fetchOrganiserAnalyticsApi(
+  range: '7d' | '30d' | 'all',
+): Promise<OrganiserAnalytics> {
+  const data = await apiFetch<BackendOrganiserAnalytics>(`/analytics/organiser?range=${range}`);
+  return mapOrganiserAnalytics(data);
+}
+
+export async function fetchEventAttendees(eventId: string): Promise<AttendeeRecord[]> {
+  const rows = await apiFetch<BackendAttendee[]>(`/events/${eventId}/attendees`);
+  return (rows || []).map(mapAttendeeResponse);
+}
+
+/** At-the-desk manual check-in (no QR token needed) — organiser-only, owner-checked server-side. */
+export async function manualCheckInApi(eventId: string, passId: string): Promise<AttendeeRecord> {
+  const row = await apiFetch<BackendAttendee>(`/events/${eventId}/attendees/${passId}/check-in`, {
+    method: 'POST',
+  });
+  return mapAttendeeResponse(row);
 }
 
 export async function createOrderApi(
